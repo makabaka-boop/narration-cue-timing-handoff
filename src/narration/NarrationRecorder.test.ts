@@ -419,6 +419,45 @@ describe('late events vs newer sessions', () => {
   });
 });
 
+describe('take identity', () => {
+  it('assigns a globally unique takeUid on every sealed take, even after remount', async () => {
+    const a1 = new FakeMediaAdapter({});
+    const r1 = new NarrationRecorder(a1);
+    r1.enable();
+    await flush();
+    r1.start();
+    r1.stop();
+    await flush();
+    const uid1 = r1.getState().take!.takeUid;
+    expect(r1.getState().take!.sessionId).toBe(1);
+
+    // Discard and re-record in the same recorder: session id 2, new take id.
+    r1.discard();
+    await flush();
+    r1.start();
+    r1.stop();
+    await flush();
+    const uid2 = r1.getState().take!.takeUid;
+    expect(r1.getState().take!.sessionId).toBe(2);
+    expect(uid2).not.toBe(uid1);
+
+    // A brand-new recorder (booth remount) restarts its session counter at 1
+    // but must NOT reuse the take identity: point-matching relies on takeUid
+    // being unique across remounts.
+    const a2 = new FakeMediaAdapter({});
+    const r2 = new NarrationRecorder(a2);
+    r2.enable();
+    await flush();
+    r2.start();
+    r2.stop();
+    await flush();
+    const take3 = r2.getState().take!;
+    expect(take3.sessionId).toBe(1);
+    expect(take3.takeUid).not.toBe(uid1);
+    expect(take3.takeUid).not.toBe(uid2);
+  });
+});
+
 describe('cleanup', () => {
   it('stop while recording: tracks stopped, graph closed, listeners detached', async () => {
     const { adapter } = await recorded({});

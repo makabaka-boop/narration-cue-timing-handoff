@@ -15,6 +15,15 @@ import {
   type RepairPlan,
   type RevisionId,
 } from './solver/repair';
+import {
+  applyPointMatch,
+  buildPointMatchPlan,
+  previewPointMatch,
+  POINT_MATCH_REASON_TEXT,
+  type PointMatchAnalysis,
+  type PointMatchPlan,
+  type TakeMark,
+} from './solver/pointMatch';
 
 interface Draft {
   cues: Cue[];
@@ -54,6 +63,177 @@ function conflictText(result: InfeasibleResult): string {
 }
 
 type WindowField = 'earliest' | 'latest';
+
+interface PointMatchPanelProps {
+  cueCount: number;
+  mark: TakeMark | null;
+  onPreview: (cueIndex: number, offset: number) => void;
+  analysis: PointMatchAnalysis | null;
+  plan: PointMatchPlan | null;
+  stale: boolean;
+  notice: string | null;
+  onApply: () => void;
+  onDismiss: () => void;
+}
+
+/**
+ * Narration point-matching panel. The operator picks one cue and states the
+ * integer offset of the recording timeline relative to the program timeline;
+ * the preview intersects the marked feasible range with the cue's current
+ * window and re-solves. Generation never edits the draft: adoption is the
+ * only mutating action and is re-checked against the take session and every
+ * subtitle revision before a single atomic commit.
+ */
+function PointMatchPanel({
+  cueCount,
+  mark,
+  onPreview,
+  analysis,
+  plan,
+  stale,
+  notice,
+  onApply,
+  onDismiss,
+}: PointMatchPanelProps): JSX.Element {
+  const [cueRaw, setCueRaw] = useState('');
+  const [offsetRaw, setOffsetRaw] = useState('0');
+  const [inputError, setInputError] = useState<string | null>(null);
+
+  const generate = (): void => {
+    if (!mark) {
+      setInputError('还没有收到录音时间标记：请先在复听的 take 上标记句子并送到字幕页。');
+      return;
+    }
+    const cueIndex = Number(cueRaw);
+    const offset = Number(offsetRaw);
+    if (!Number.isInteger(cueIndex) || cueIndex < 0 || cueIndex >= cueCount) {
+      setInputError(`cue 序号必须是 0–${cueCount - 1} 内的整数。`);
+      return;
+    }
+    if (!Number.isInteger(offset)) {
+      setInputError('录音相对节目时间轴的偏移必须是整数毫秒。');
+      return;
+    }
+    setInputError(null);
+    onPreview(cueIndex, offset);
+  };
+
+  return (
+    <section className="pointmatch" data-testid="pointmatch">
+      <h2>录音对点</h2>
+      {!mark ? (
+        <p className="pm-empty">
+          尚无时间标记。切到「现场旁白采集」，在已封装、可复听的 take
+          上标记一句话的起止毫秒后送到本页；跨工作区只传递时间标记，不转移音频地址。
+        </p>
+      ) : (
+        <>
+          <p className="pm-mark" data-testid="pm-mark">
+            take #{mark.takeUid}（录音会话 {mark.sessionId}）· 录音标记段{' '}
+            [{mark.markStartMs}, {mark.markEndMs}) ms · take 时长{' '}
+            {mark.takeDurationMs} ms
+          </p>
+          <div className="pm-form">
+            <label>
+              cue 序号
+              <input
+                data-testid="pm-cue"
+                type="number"
+                min={0}
+                max={cueCount - 1}
+                step={1}
+                value={cueRaw}
+                placeholder={`0–${cueCount - 1}`}
+                onChange={(e) => setCueRaw(e.target.value)}
+              />
+            </label>
+            <label>
+              录音→节目偏移 (ms)
+              <input
+                data-testid="pm-offset"
+                type="number"
+                step={1}
+                value={offsetRaw}
+                onChange={(e) => setOffsetRaw(e.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              data-testid="pm-preview"
+              className="primary"
+              onClick={generate}
+            >
+              生成对点重排预览
+            </button>
+          </div>
+
+          {inputError && (
+            <div className="banner error" data-testid="pm-input-error">
+              {inputError}
+            </div>
+          )}
+          {notice && (
+            <div className="banner warn" data-testid="pm-notice">
+              <span>{notice}</span>
+              <button type="button" className="repair-btn" onClick={onDismiss}>
+                知道了
+              </button>
+            </div>
+          )}
+
+          {analysis?.kind === 'rejected' && (
+            <div className="banner error" data-testid="pm-rejected">
+              对点未执行 · {POINT_MATCH_REASON_TEXT[analysis.reason]}
+              {analysis.detail ? ` ${analysis.detail}` : ''}
+              字幕工作稿与已采纳起点均未改动。
+            </div>
+          )}
+          {analysis?.kind === 'no-solution' && (
+            <div className="banner error" data-testid="pm-nosolution">
+              <span>{conflictText(analysis.result)}</span>
+              <span> 整体无解：仅显示原因，未改动窗口、起点或固定点。</span>
+            </div>
+          )}
+
+          {/*
+            A ready plan stays on screen after a revision/take change and is
+            marked 已过期 (like the repair plan): the matching analysis is
+            cleared, but the plan itself remains inspectable and its adoption
+            is refused atomically at click time.
+          */}
+          {plan && (
+            <div
+              className={'banner repair' + (stale ? ' stale' : '')}
+              data-testid="pm-plan"
+            >
+              <div className="repair-head">
+                <span>
+                  对点预览 · cue #{plan.cueIndex} 窗口收窄为 [
+                  {plan.window.earliest}, {plan.window.latest}] · 预览位移总和{' '}
+                  {plan.cost.toLocaleString()} ms · 新起点{' '}
+                  {fmtTime(plan.starts[plan.cueIndex])}
+                </span>
+                {stale && <em className="stale-tag">已过期</em>}
+              </div>
+              <div className="repair-actions">
+                <button
+                  type="button"
+                  className="repair-apply"
+                  data-testid="pm-apply"
+                  onClick={onApply}
+                >
+                  {stale
+                    ? '尝试采纳（已过期）'
+                    : '采纳（窗口与起点一次性更新）'}
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
 
 interface CueRowProps {
   index: number;
@@ -197,9 +377,10 @@ function CueRow({
 
 /**
  * Subtitle editing workspace. Kept as a standalone component so the narration
- * booth never imports or reads any cue data.
+ * booth never imports or reads any cue data. The only inbound cross-workspace
+ * datum is an optional timing-only `mark`.
  */
-export function CueEditor(): JSX.Element {
+export function CueEditor({ mark }: { mark?: TakeMark | null }): JSX.Element {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [pins, setPins] = useState<Map<number, number>>(new Map());
   const [importError, setImportError] = useState(false);
@@ -222,6 +403,13 @@ export function CueEditor(): JSX.Element {
   const [plan, setPlan] = useState<RepairPlan | null>(null);
   const [planNotice, setPlanNotice] = useState<string | null>(null);
 
+  // Narration point-match preview state. Analysis is a pure snapshot; nothing
+  // it describes is installed until an identity-checked, atomic adoption.
+  const [pointAnalysis, setPointAnalysis] =
+    useState<PointMatchAnalysis | null>(null);
+  const [pointPlan, setPointPlan] = useState<PointMatchPlan | null>(null);
+  const [pointNotice, setPointNotice] = useState<string | null>(null);
+
   const preview: Preview | null = useMemo(() => {
     if (!draft || importError) return null;
     const r = solve({ cues: draft.cues, base: draft.base, pins });
@@ -240,6 +428,92 @@ export function CueEditor(): JSX.Element {
       windowsRev: rev.windowsRev,
     });
 
+  // A point-match preview is valid only against the exact take session AND the
+  // exact subtitle revisions it was generated with.
+  const pointStale =
+    pointPlan !== null &&
+    (!sameRevision(pointPlan, rev) || mark?.takeUid !== pointPlan.takeUid);
+
+  /**
+   * Retire any point-match preview on EVERY draft/base/pin/window revision
+   * bump. Retirement lives in a revKey-keyed effect (not in each handler) so
+   * it cannot be reordered against other setStates queued in the same event:
+   * an action that bumps a revision and regenerates a preview in one tick
+   * observes the bump first, and the fresh preview is built for the new
+   * revisions. Comparing against the previously committed key (rather than a
+   * one-shot guard) is robust to StrictMode's setup→cleanup→setup effect
+   * double-run, which sees an unchanged key and retires nothing.
+   */
+  const revKey = `${rev.draftRev}:${rev.baseRev}:${rev.pinsRev}:${rev.windowsRev}`;
+  const prevRevKey = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevRevKey.current;
+    prevRevKey.current = revKey;
+    if (prev === null || prev === revKey) return; // mount or unchanged re-run
+    // A revision bump invalidates a preview: retire the *analysis* banner
+    // (rejected/no-solution/ready reasons). A ready plan is deliberately kept
+    // and marked 已过期, mirroring the repair plan: the operator can still see
+    // what was proposed, and adoption is refused atomically at click time.
+    setPointAnalysis(null);
+    setPointNotice(null);
+  }, [revKey]);
+
+  const generatePoint = (cueIndex: number, offset: number): void => {
+    if (!draft) return;
+    const analysis = previewPointMatch({
+      cues: draft.cues,
+      base: draft.base,
+      pins,
+      mark: mark ?? null,
+      cueIndex,
+      offset,
+    });
+    setPointAnalysis(analysis);
+    setPointNotice(null);
+    // Only a feasible preview can be adopted; rejected/no-solution analyses
+    // are reasons-only and never carry state changes.
+    setPointPlan(
+      analysis.kind === 'ready' ? buildPointMatchPlan(analysis, rev) : null,
+    );
+  };
+
+  const applyPoint = (): void => {
+    if (!draft || !pointPlan) return;
+    const result = applyPointMatch(pointPlan, rev, mark?.takeUid ?? null);
+    if (!result.ok) {
+      // Stale take session or stale subtitle revisions: announce expiry and
+      // perform no partial modification.
+      setPointNotice(
+        '对点预览已过期（take 会话或字幕修订版本已变更），窗口与起点均未改动。',
+      );
+      return;
+    }
+    // Re-derive the target window from the live cue right before committing:
+    // the plan guarantees revisions are unchanged, this is a belt-and-braces
+    // check that the cue still exists at the planned index.
+    const target: Cue = {
+      ...draft.cues[result.cueIndex],
+      earliest: result.window.earliest,
+      latest: result.window.latest,
+    };
+    const cues = draft.cues.slice();
+    cues[result.cueIndex] = target;
+    // One atomic update: window and starts are installed together. There is no
+    // intermediate render where the window changed but the solve failed.
+    setDraft({ cues, base: result.starts });
+    setRev((r) => ({
+      ...r,
+      draftRev: r.draftRev + 1,
+      baseRev: r.baseRev + 1,
+      windowsRev: r.windowsRev + 1,
+    }));
+    setPlan(null);
+    setPlanNotice(null);
+    setPointAnalysis(null);
+    setPointPlan(null);
+    setPointNotice(null);
+  };
+
   const importText = (text: string): void => {
     const parsed = parseCues(text);
     if (!parsed.ok) {
@@ -256,6 +530,10 @@ export function CueEditor(): JSX.Element {
     }));
     setPlan(null);
     setPlanNotice(null);
+    // A new document cannot carry a point-match preview built for the old one.
+    setPointAnalysis(null);
+    setPointPlan(null);
+    setPointNotice(null);
     setImportError(false);
     setPins(new Map());
     setWindowError(null);
@@ -491,6 +769,20 @@ export function CueEditor(): JSX.Element {
           </span>
         )}
       </section>
+
+      {!importError && draft && (
+        <PointMatchPanel
+          cueCount={draft.cues.length}
+          mark={mark ?? null}
+          onPreview={generatePoint}
+          analysis={pointAnalysis}
+          plan={pointPlan}
+          stale={pointStale}
+          notice={pointNotice}
+          onApply={applyPoint}
+          onDismiss={() => setPointNotice(null)}
+        />
+      )}
 
       {importError && (
         <div className="banner error">

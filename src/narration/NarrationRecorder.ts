@@ -62,6 +62,13 @@ export type NarrationErrorCode =
 
 export interface NarrationTake {
   readonly sessionId: number;
+  /**
+   * Globally unique take identity (unique even across recorder instances and
+   * booth re-mounts). Point-matching binds its preview to this value so a
+   * re-recorded take always expires a pending point-match; sessionId alone is
+   * not unique after the booth unmounts and constructs a fresh recorder.
+   */
+  readonly takeUid: number;
   readonly url: string;
   readonly mimeType: string;
   readonly size: number;
@@ -125,6 +132,16 @@ export class NarrationRecorder {
 
   private seq = 0;
   private current: Session | null = null;
+  /**
+   * Process-wide take counter shared by every recorder instance. It must not
+   * reset on discard/re-record or on booth unmount: a later booth session that
+   * happens to reuse session id 1 still produces a different take identity.
+   */
+  private static takeSeq = 0;
+
+  static nextTakeUid(): number {
+    return ++NarrationRecorder.takeSeq;
+  }
   private state: NarrationState = {
     phase: 'idle',
     sessionId: 0,
@@ -431,6 +448,7 @@ export class NarrationRecorder {
 
     const take: NarrationTake = {
       sessionId: s.id,
+      takeUid: NarrationRecorder.nextTakeUid(),
       url,
       mimeType: s.mimeType,
       size: blob.size,

@@ -566,3 +566,126 @@ header h1 {
   line-height: 1.7;
 }
 
+
+/* Narration sentence marker (review booth) */
+.mark-form {
+  width: 100%;
+  border-top: 1px solid #e3e6ec;
+  padding-top: 14px;
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+}
+
+.mark-title {
+  flex-basis: 100%;
+  color: #5b6270;
+  font-size: 13px;
+  margin: 0 0 4px;
+}
+
+.mark-form label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #3a4150;
+}
+
+.mark-form input {
+  width: 110px;
+  padding: 5px 8px;
+  border: 1px solid #c3c8d2;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.mark-form button {
+  padding: 6px 14px;
+  border: 1px solid #2f6fed;
+  background: #fff;
+  color: #2f6fed;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.mark-form button:hover {
+  background: #eef3fe;
+}
+
+.mark-notice {
+  flex-basis: 100%;
+  color: #b01f24;
+  font-size: 13px;
+}
+
+.mark-sent {
+  width: 100%;
+  color: #1d7a46;
+  font-size: 13px;
+  margin: 2px 0 6px;
+}
+
+/* Point-match panel (subtitle workspace) */
+.pointmatch {
+  border: 1px solid #dfe3ea;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 10px 0;
+  background: #fafbfd;
+}
+
+.pointmatch h2 {
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+
+.pm-empty {
+  color: #767d8b;
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 0;
+}
+
+.pm-mark {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  color: #3a4150;
+  margin: 0 0 10px;
+}
+
+.pm-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.pm-form label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.pm-form input {
+  width: 130px;
+  padding: 5px 8px;
+  border: 1px solid #c3c8d2;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.pm-form .primary {
+  padding: 6px 16px;
+  border: 1px solid #2f6fed;
+  background: #2f6fed;
+  color: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}

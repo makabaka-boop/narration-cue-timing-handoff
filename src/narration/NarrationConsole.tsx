@@ -1,8 +1,9 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { createBrowserAdapter } from './browserAdapter';
 import { useNarrationRecorder } from './useNarrationRecorder';
 import type { NarrationMediaAdapter } from './mediaAdapter';
-import type { NarrationPhase } from './NarrationRecorder';
+import type { NarrationPhase, NarrationTake } from './NarrationRecorder';
+import type { TakeMark } from '../solver/pointMatch';
 import { ERROR_TEXT, formatDuration } from './labels';
 
 const STEPS: Array<{ key: NarrationPhase; label: string }> = [
@@ -21,14 +22,110 @@ function stepIndex(phase: NarrationPhase): number {
 interface NarrationConsoleProps {
   /** Production injects the real browser adapter; tests a fake one. */
   adapter?: NarrationMediaAdapter;
+  /**
+   * Called with timing-only marks the operator hands to the subtitle
+   * workspace, or with null when the current take is discarded/completed.
+   * The take object URL is never included: its ownership stays with this
+   * booth and is revoked through the existing teardown paths.
+   */
+  onTakeMark?: (mark: TakeMark | null) => void;
+}
+
+interface MarkFormProps {
+  take: NarrationTake;
+  onSend: (mark: TakeMark) => void;
+}
+
+/**
+ * Sentence marker shown while a sealed take can be re-listened. Only integer
+ * millisecond marks inside the take with start strictly before end are
+ * accepted; the marker hands timing numbers across to the subtitle workspace
+ * but keeps the media URL here.
+ */
+function MarkForm({ take, onSend }: MarkFormProps): JSX.Element {
+  const [rawStart, setRawStart] = useState('');
+  const [rawEnd, setRawEnd] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const submit = (): void => {
+    const a = Number(rawStart);
+    const b = Number(rawEnd);
+    if (
+      !Number.isInteger(a) ||
+      !Number.isInteger(b) ||
+      a < 0 ||
+      b < 0 ||
+      a > take.durationMs ||
+      b > take.durationMs
+    ) {
+      setNotice(
+        `起止必须是 0–${take.durationMs} 内的整数毫秒（take 时长）。`,
+      );
+      return;
+    }
+    if (a >= b) {
+      setNotice('标记倒序：句子起点必须早于终点。');
+      return;
+    }
+    setNotice(null);
+    onSend({
+      sessionId: take.sessionId,
+      takeUid: take.takeUid,
+      markStartMs: a,
+      markEndMs: b,
+      takeDurationMs: take.durationMs,
+    });
+  };
+
+  return (
+    <div className="mark-form">
+      <p className="mark-title">对点：标记这句话在录音中的起止毫秒（可复听后填写）</p>
+      <label>
+        起
+        <input
+          data-testid="mark-start"
+          type="number"
+          min={0}
+          max={take.durationMs}
+          step={1}
+          value={rawStart}
+          placeholder="0"
+          onChange={(e) => setRawStart(e.target.value)}
+        />
+      </label>
+      <label>
+        止
+        <input
+          data-testid="mark-end"
+          type="number"
+          min={0}
+          max={take.durationMs}
+          step={1}
+          value={rawEnd}
+          placeholder={String(take.durationMs)}
+          onChange={(e) => setRawEnd(e.target.value)}
+        />
+      </label>
+      <button type="button" data-testid="mark-send" onClick={submit}>
+        把时间标记送到字幕页
+      </button>
+      {notice && (
+        <div className="mark-notice" data-testid="mark-error">
+          {notice}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /**
  * Live narration booth. Fully independent of the subtitle editor: it neither
- * imports nor reads any cue data — its only input is the microphone.
+ * imports nor reads any cue data — its only input is the microphone. The sole
+ * outbound datum is a timing-only TakeMark (never the take URL).
  */
 export function NarrationConsole({
   adapter,
+  onTakeMark,
 }: NarrationConsoleProps): JSX.Element {
   // The adapter is a stable module-level singleton in production; useMemo
   // guarantees the hook's effect does not recreate controllers on re-render.
@@ -36,9 +133,30 @@ export function NarrationConsole({
   const { state, enable, start, stop, discard, reset } =
     useNarrationRecorder(media);
   const { phase, errorCode, level, elapsedMs, take } = state;
+  const [sentUid, setSentUid] = useState<number | null>(null);
 
   const activeStep = stepIndex(phase);
   const busy = phase === 'requesting' || phase === 'packaging';
+
+  const sendMark = (mark: TakeMark): void => {
+    // Hand across timing numbers only; the booth keeps the object URL.
+    onTakeMark?.(mark);
+    setSentUid(mark.takeUid);
+  };
+
+  const finishTake = (): void => {
+    // 完成：现有机制关闭会话并释放 take URL。已经送到字幕页的只是毫秒数字，
+    // 交付后不随 booth 关闭而撤回；未使用对点时本来就没有标记。
+    setSentUid(null);
+    reset();
+  };
+
+  const redoTake = (): void => {
+    // 废弃重来：take URL 由录音台撤销，跨工作区只撤回时间标记本身。
+    onTakeMark?.(null);
+    setSentUid(null);
+    discard();
+  };
 
   return (
     <div className="booth">
@@ -150,11 +268,22 @@ export function NarrationConsole({
               <dt>格式</dt>
               <dd>{take.mimeType || '平台默认'}</dd>
             </dl>
+            <MarkForm take={take} onSend={sendMark} />
+            {sentUid === take.takeUid && (
+              <div className="mark-sent" data-testid="mark-sent">
+                时间标记已送到字幕页（仅毫秒位置，不携带音频地址）。
+              </div>
+            )}
             <div className="rec-actions">
-              <button type="button" className="danger" onClick={discard}>
+              <button
+                type="button"
+                className="danger"
+                data-testid="discard-take"
+                onClick={redoTake}
+              >
                 废弃重来
               </button>
-              <button type="button" onClick={reset}>
+              <button type="button" data-testid="finish-take" onClick={finishTake}>
                 完成，关闭麦克风
               </button>
             </div>
