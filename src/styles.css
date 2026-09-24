@@ -566,3 +566,142 @@ header h1 {
   line-height: 1.7;
 }
 
+/* ---- spotting ("对点") -------------------------------------------------- */
+
+.spot-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed #e2e5ea;
+  text-align: left;
+}
+
+.spot-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2430;
+  text-align: center;
+}
+
+.spot-fields {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.spot-fields label {
+  font-size: 11px;
+  color: #5b6270;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.spot-fields input {
+  width: 128px;
+  padding: 4px 6px;
+  border: 1px solid #c3c8d2;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.spot-fields button {
+  padding: 6px 14px;
+  border: 1px solid #2f6fed;
+  background: #2f6fed;
+  color: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.spot-error,
+.spot-sent {
+  margin: 10px 0 0;
+  font-size: 12px;
+  text-align: center;
+}
+
+.spot-error {
+  color: #b01f24;
+}
+
+.spot-sent {
+  color: #1d6b30;
+}
+
+.spot-panel {
+  background: #fff;
+  border: 1px solid #e2e5ea;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.spot-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  color: #3c2a78;
+  margin-bottom: 10px;
+}
+
+.spot-dismiss {
+  padding: 4px 10px;
+  border: 1px solid #c3c8d2;
+  background: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.spot-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.spot-form label {
+  font-size: 11px;
+  color: #5b6270;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.spot-form input {
+  width: 150px;
+  padding: 4px 6px;
+  border: 1px solid #c3c8d2;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.spot-form button {
+  padding: 6px 14px;
+  border: 1px solid #2f6fed;
+  background: #2f6fed;
+  color: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.spot-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #8a909c;
+}
+
+.spot-panel .banner {
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+

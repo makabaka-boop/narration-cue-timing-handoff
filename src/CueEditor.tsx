@@ -15,6 +15,11 @@ import {
   type RepairPlan,
   type RevisionId,
 } from './solver/repair';
+import {
+  alignmentWindow,
+  type AlignmentWindowRejection,
+  type SpotMarker,
+} from './solver/align';
 
 interface Draft {
   cues: Cue[];
@@ -54,6 +59,42 @@ function conflictText(result: InfeasibleResult): string {
 }
 
 type WindowField = 'earliest' | 'latest';
+
+/**
+ * A generated spotting preview. Carries the identity of the marker and of
+ * every subtitle revision it was generated against, so adoption can refuse a
+ * stale plan instead of committing a window the solver never saw. The solved
+ * starts are stored, not recomputed on adoption: window and baseline switch
+ * in one state write, never "window first, solve later".
+ */
+interface AlignmentPreview {
+  markerId: number;
+  sessionId: number;
+  cueIndex: number;
+  offsetMs: number;
+  earliest: number;
+  latest: number;
+  starts: number[];
+  cost: number;
+  rev: RevisionId;
+}
+
+type AlignmentResult =
+  | { kind: 'ready'; preview: AlignmentPreview }
+  | { kind: 'rejected'; message: string };
+
+function alignmentRejectionText(r: AlignmentWindowRejection): string {
+  if (r.reason === 'MARK_REVERSED') {
+    return `标记倒序：标记起点 ${r.markStartMs} 晚于标记终点 ${r.markEndMs}。`;
+  }
+  if (r.reason === 'SEGMENT_TOO_SHORT') {
+    return `时长不足：标记段 ${r.segmentMs} ms 装不下该 cue 的时长 ${r.durationMs} ms。`;
+  }
+  if (r.reason === 'OUT_OF_PROGRAM') {
+    return `越过节目边界：按偏移平移后段落 [${r.segStart}, ${r.segEnd}] 超出节目范围 [0, ${DAY_MS}]。`;
+  }
+  return `交集为空：可完整落入标记段的起点范围 [${r.fitEarliest}, ${r.fitLatest}] 与该 cue 现有窗口 [${r.cueEarliest}, ${r.cueLatest}] 不相交。`;
+}
 
 interface CueRowProps {
   index: number;
@@ -195,11 +236,22 @@ function CueRow({
   );
 }
 
+interface CueEditorProps {
+  /** Pending spotting marker sent from the narration booth (time data only). */
+  spotMarker?: SpotMarker | null;
+  /** Dismisses the pending marker (consumed or discarded by the operator). */
+  onClearSpotMarker?: () => void;
+}
+
 /**
  * Subtitle editing workspace. Kept as a standalone component so the narration
- * booth never imports or reads any cue data.
+ * booth never imports or reads any cue data; the only thing arriving from the
+ * booth is a spotting time marker.
  */
-export function CueEditor(): JSX.Element {
+export function CueEditor({
+  spotMarker = null,
+  onClearSpotMarker,
+}: CueEditorProps): JSX.Element {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [pins, setPins] = useState<Map<number, number>>(new Map());
   const [importError, setImportError] = useState(false);
@@ -221,6 +273,16 @@ export function CueEditor(): JSX.Element {
   });
   const [plan, setPlan] = useState<RepairPlan | null>(null);
   const [planNotice, setPlanNotice] = useState<string | null>(null);
+
+  // Spotting ("对点"): the pending marker arrives from the narration booth;
+  // the operator picks a cue and the recording's offset against the program
+  // timeline, then generates a rearrangement preview. A generated preview is
+  // kept (and flagged 已过期) when the marker or any revision moves on, so
+  // adoption itself re-checks the take session and subtitle revisions.
+  const [alignCue, setAlignCue] = useState('');
+  const [alignOffset, setAlignOffset] = useState('');
+  const [alignResult, setAlignResult] = useState<AlignmentResult | null>(null);
+  const [alignNotice, setAlignNotice] = useState<string | null>(null);
 
   const preview: Preview | null = useMemo(() => {
     if (!draft || importError) return null;
@@ -428,6 +490,119 @@ export function CueEditor(): JSX.Element {
     setPlanNotice(null);
   };
 
+  // A ready spotting preview is adoptable only while the pending marker is
+  // still the exact one it was generated from and no subtitle revision moved.
+  const alignStale =
+    alignResult?.kind === 'ready' &&
+    (!spotMarker ||
+      spotMarker.id !== alignResult.preview.markerId ||
+      spotMarker.sessionId !== alignResult.preview.sessionId ||
+      !sameRevision(alignResult.preview.rev, rev));
+
+  /**
+   * Build the spotting preview. Every failure path is reason-only: the
+   * working draft, adopted baseline, pins, windows and revisions stay exactly
+   * as they were.
+   */
+  const generateAlignment = (): void => {
+    setAlignNotice(null);
+    if (!spotMarker) return;
+    if (!draft) {
+      setAlignResult({
+        kind: 'rejected',
+        message: '尚未导入字幕工作稿，无法选择 cue。',
+      });
+      return;
+    }
+    const idx = Number(alignCue);
+    if (alignCue.trim() === '' || !Number.isInteger(idx) || idx < 0 || idx >= draft.cues.length) {
+      setAlignResult({
+        kind: 'rejected',
+        message: `cue 序号无效：请输入 0–${draft.cues.length - 1} 的整数。`,
+      });
+      return;
+    }
+    const offset = Number(alignOffset);
+    if (alignOffset.trim() === '' || !Number.isInteger(offset)) {
+      setAlignResult({
+        kind: 'rejected',
+        message: '偏移必须是整数毫秒（节目时间 = 录音时刻 + 偏移）。',
+      });
+      return;
+    }
+    const w = alignmentWindow(draft.cues[idx], spotMarker, offset);
+    if (!w.ok) {
+      setAlignResult({ kind: 'rejected', message: alignmentRejectionText(w) });
+      return;
+    }
+    // Tentative window, solved against the current pins/baseline in memory
+    // only — nothing commits unless the preview is adopted later.
+    const cues = draft.cues.slice();
+    cues[idx] = { ...draft.cues[idx], earliest: w.earliest, latest: w.latest };
+    const r = solve({ cues, base: draft.base, pins });
+    if (!r.ok) {
+      setAlignResult({
+        kind: 'rejected',
+        message: `整体无解：${conflictText(r)}`,
+      });
+      return;
+    }
+    setAlignResult({
+      kind: 'ready',
+      preview: {
+        markerId: spotMarker.id,
+        sessionId: spotMarker.sessionId,
+        cueIndex: idx,
+        offsetMs: offset,
+        earliest: w.earliest,
+        latest: w.latest,
+        starts: r.starts,
+        cost: r.cost,
+        rev,
+      },
+    });
+  };
+
+  /**
+   * Adopt a spotting preview: re-check the take session and every subtitle
+   * revision against the preview, then install the intersected window and the
+   * solved starts in a single draft write. A stale preview changes nothing.
+   */
+  const adoptAlignment = (): void => {
+    if (!draft || alignResult?.kind !== 'ready') return;
+    const p = alignResult.preview;
+    const fresh =
+      spotMarker !== null &&
+      spotMarker.id === p.markerId &&
+      spotMarker.sessionId === p.sessionId &&
+      sameRevision(p.rev, rev);
+    if (!fresh) {
+      setAlignNotice(
+        '对点预览已过期（时间标记、工作稿、基线、固定点或窗口已变更），未做任何修改。',
+      );
+      return;
+    }
+    const cues = draft.cues.slice();
+    cues[p.cueIndex] = {
+      ...draft.cues[p.cueIndex],
+      earliest: p.earliest,
+      latest: p.latest,
+    };
+    // One atomic commit: the intersected window and the solved baseline move
+    // together, so the window can never go live without its solution.
+    setDraft({ cues, base: p.starts });
+    setRev((r) => ({
+      draftRev: r.draftRev + 1,
+      baseRev: r.baseRev + 1,
+      pinsRev: r.pinsRev,
+      windowsRev: r.windowsRev + 1,
+    }));
+    setPlan(null);
+    setPlanNotice(null);
+    setAlignResult(null);
+    setAlignNotice(null);
+  };
+
   const downloadStarts = (starts: number[]): void => {
     if (!draft) return;
     const blob = new Blob([toCuesJson(draft.cues, starts)], {
@@ -566,6 +741,117 @@ export function CueEditor(): JSX.Element {
           导入根对象仅含 cues 的 JSON（1–20000 项；start 严格递增，duration
           1–60000，text 1–200 字符；可选整数 earliest/latest 闭区间）。
         </div>
+      )}
+
+      {spotMarker && (
+        <section className="spot-panel" data-testid="spot-panel">
+          <div className="spot-head">
+            <span>
+              对点标记 · take 会话 #{spotMarker.sessionId} · 录音内段落 [
+              {spotMarker.markStartMs}, {spotMarker.markEndMs}] ms（take 时长{' '}
+              {spotMarker.takeDurationMs} ms）
+            </span>
+            <button
+              type="button"
+              className="spot-dismiss"
+              data-testid="spot-clear"
+              onClick={() => {
+                setAlignResult(null);
+                setAlignNotice(null);
+                onClearSpotMarker?.();
+              }}
+            >
+              清除标记
+            </button>
+          </div>
+          <div className="spot-form">
+            <label>
+              cue 序号
+              <input
+                data-testid="align-cue"
+                type="number"
+                min={0}
+                max={draft ? draft.cues.length - 1 : 0}
+                step={1}
+                value={alignCue}
+                placeholder="—"
+                onChange={(e) => setAlignCue(e.target.value)}
+              />
+            </label>
+            <label>
+              录音相对节目时间轴的偏移 ms
+              <input
+                data-testid="align-offset"
+                type="number"
+                step={1}
+                value={alignOffset}
+                placeholder="0"
+                onChange={(e) => setAlignOffset(e.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              data-testid="align-generate"
+              onClick={generateAlignment}
+            >
+              生成对点预览
+            </button>
+          </div>
+          <p className="spot-hint">
+            节目时间 = 录音时刻 + 偏移；系统取该 cue 可完整落入标记段的起始范围，与其现有
+            earliest/latest 求交集后按现有固定点、全天边界与最小位移规则重排。
+          </p>
+
+          {alignResult?.kind === 'rejected' && (
+            <div className="banner error" data-testid="align-rejected">
+              <span>ALIGN_REJECTED · {alignResult.message}</span>
+            </div>
+          )}
+
+          {alignNotice && (
+            <div className="banner warn" data-testid="align-notice">
+              <span>{alignNotice}</span>
+              <button
+                type="button"
+                className="repair-btn"
+                onClick={() => setAlignNotice(null)}
+              >
+                知道了
+              </button>
+            </div>
+          )}
+
+          {alignResult?.kind === 'ready' && (
+            <div
+              className={'banner repair' + (alignStale ? ' stale' : '')}
+              data-testid="align-preview"
+            >
+              <div className="repair-head">
+                <span>
+                  对点预览 · cue #{alignResult.preview.cueIndex} 新窗口 [
+                  {alignResult.preview.earliest},{' '}
+                  {alignResult.preview.latest}] · 起点{' '}
+                  {alignResult.preview.starts[alignResult.preview.cueIndex]} ·
+                  相对已采纳稿绝对位移总和{' '}
+                  {alignResult.preview.cost.toLocaleString()} ms
+                </span>
+                {alignStale && <em className="stale-tag">已过期</em>}
+              </div>
+              <div className="repair-actions">
+                <button
+                  type="button"
+                  className="repair-apply"
+                  data-testid="align-adopt"
+                  onClick={adoptAlignment}
+                >
+                  {alignStale
+                    ? '尝试采纳（已过期）'
+                    : '采纳对点（窗口与起点一次性更新）'}
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
       )}
 
       {draft && (
